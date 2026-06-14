@@ -79,7 +79,7 @@ def main():
     def read_kafka_topic(topic, schema):
         return (spark.readStream
                 .format('kafka')
-                .option('kafka.bootstrap.servers', 'broker:29092')
+                .option('kafka.bootstrap.servers', configuration['KAFKA_BOOTSTRAP_SERVERS'])
                 .option('subscribe', topic)
                 .option('startingOffsets', 'earliest')
                 .load()
@@ -104,18 +104,23 @@ def main():
         weatherDF = read_kafka_topic('weather_data', weatherSchema).alias('weather')
         emergencyDF = read_kafka_topic('emergency_data', emergencySchema).alias('emergency')
 
-        query1 = streamWriter(vehicleDF, 's3a://spark-streaming-data/checkpoints/vehicle_data',
-                     's3a://spark-streaming-data/data/vehicle_data')
-        query2 = streamWriter(gpsDF, 's3a://spark-streaming-data/checkpoints/gps_data',
-                     's3a://spark-streaming-data/data/gps_data')
-        query3 = streamWriter(trafficDF, 's3a://spark-streaming-data/checkpoints/traffic_data',
-                     's3a://spark-streaming-data/data/traffic_data')
-        query4 = streamWriter(weatherDF, 's3a://spark-streaming-data/checkpoints/weather_data',
-                     's3a://spark-streaming-data/data/weather_data')
-        query5 = streamWriter(emergencyDF, 's3a://spark-streaming-data/checkpoints/emergency_data',
-                     's3a://spark-streaming-data/data/emergency_data')
+        bucket = configuration['S3_BUCKET']
 
-        query5.awaitTermination()
+        def sink(df, name):
+            return streamWriter(df,
+                                f's3a://{bucket}/checkpoints/{name}',
+                                f's3a://{bucket}/data/{name}')
+
+        queries = [
+            sink(vehicleDF, 'vehicle_data'),
+            sink(gpsDF, 'gps_data'),
+            sink(trafficDF, 'traffic_data'),
+            sink(weatherDF, 'weather_data'),
+            sink(emergencyDF, 'emergency_data'),
+        ]
+
+        for q in queries:
+            q.awaitTermination()
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:

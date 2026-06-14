@@ -1,9 +1,12 @@
-# Ignore the config file containing API keys
-config.py
+# Secrets / local env
+.env
+config.local.py
 
-# Ignore Python cache files
+# Python
 __pycache__/
 *.pyc
-
-# Ignore virtual environment
 venv/
+.venv/
+
+# OS
+.DS_Store

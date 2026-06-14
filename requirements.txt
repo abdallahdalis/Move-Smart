@@ -2,4 +2,5 @@ confluent-kafka==2.3.0
 py4j==0.10.9.7
 pyspark==3.5.0
 simplejson==3.19.2
-requests==2.26.0
+requests==2.32.3
+python-dotenv==1.0.1

@@ -1,139 +1,83 @@
-# Move Smart: Real-Time Smart City Data Processing
+# Move Smart — Real-Time Smart City Data Pipeline
 
-## Overview
+A streaming data pipeline that simulates a connected vehicle driving from Tinley
+Park to Chicago and processes its telemetry end to end: **Kafka → Spark Structured
+Streaming → AWS S3 (Parquet) → Redshift Spectrum**.
 
-The Move Smart project is a real-time data processing system for a smart city simulation. It integrates various data sources, processes the data using Apache Spark, and stores the results in AWS S3. The system also includes a Redshift external schema for querying the processed data.
+```
+ main.py (producer)         spark-city.py (consumer)
+ ┌──────────────┐  Kafka   ┌────────────────────┐  Parquet  ┌──────┐  external  ┌──────────┐
+ │ vehicle/gps/ │ ───────▶ │ Spark Structured   │ ────────▶ │  S3  │ ─ schema ▶ │ Redshift │
+ │ traffic/...  │  topics  │ Streaming + schema │           │      │            │ Spectrum │
+ └──────────────┘          └────────────────────┘           └──────┘            └──────────┘
+```
 
-## What Drives Metrics Up or Down?
+The producer emits five correlated event types per tick — **vehicle, GPS,
+traffic-camera, weather, and emergency** — keyed by event id. Spark reads each
+topic with an explicit schema, applies a watermark, and writes append-mode
+Parquet to S3, where Redshift Spectrum queries it via an external schema.
 
-### Key Factors Impacting Metrics:
-1. **Data Accuracy and Completeness**:
-   - **Up**: Ensuring accurate and complete data collection across all sensors and sources improves decision-making and system reliability.
-   - **Down**: Incomplete or inaccurate data can lead to poor decision-making and reduced system effectiveness.
+## Quick start
 
-   **Action**: Implement rigorous data validation and real-time monitoring to ensure data integrity.
-
-2. **System Scalability and Performance**:
-   - **Up**: Efficient processing of large volumes of real-time data leads to faster response times and better handling of peak loads.
-   - **Down**: Bottlenecks in data processing or storage can slow down system performance, leading to delays and reduced user satisfaction.
-
-   **Action**: Optimize the Spark jobs and S3 storage to handle larger datasets efficiently, and ensure proper load balancing.
-
-3. **User Engagement and Satisfaction**:
-   - **Up**: High-quality insights and actionable recommendations improve user engagement and satisfaction, driving system adoption.
-   - **Down**: Poor user experience or irrelevant recommendations can lead to disengagement and decreased usage.
-
-   **Action**: Continuously update and refine algorithms to ensure they meet user needs, and provide clear, actionable insights.
-
-4. **Operational Efficiency**:
-   - **Up**: Streamlined workflows and automation reduce operational costs and increase system efficiency.
-   - **Down**: Manual interventions and inefficient processes increase costs and processing time, reducing overall system efficiency.
-
-   **Action**: Automate repetitive tasks and optimize workflows to enhance operational efficiency.
-
-5. **Security and Compliance**:
-   - **Up**: Strong security measures and compliance with regulatory standards increase user trust and system reliability.
-   - **Down**: Security breaches or non-compliance can lead to fines, loss of trust, and reduced system usage.
-
-   **Action**: Implement robust security protocols and ensure compliance with relevant regulations.
-
-### Recommendations:
-- Regularly review and update data processing pipelines to ensure they align with the latest technology and user needs.
-- Monitor system performance and user feedback to identify areas for improvement.
-- Implement predictive analytics to anticipate and address potential issues before they impact system performance.
-
-## Components
-
-- **Apache Kafka**: Manages real-time data streaming.
-- **Apache Spark**: Processes data streams and writes results to AWS S3.
-- **AWS S3**: Stores the processed data.
-- **AWS Redshift**: Provides an external schema to query the data stored in S3.
-
-## Directory Structure
-
-- **jobs/**: Contains the Spark job scripts.
-- **config.py**: Configuration settings for the Spark job.
-- **spark-city.py**: Main script for reading from Kafka, processing data with Spark, and writing to S3.
-- **redshift-query.sql**: SQL script for creating an external schema in Redshift.
-- **docker-compose.yml**: Docker Compose configuration for setting up Kafka, Zookeeper, Spark, and related services.
-- **requirements.txt**: Lists Python dependencies required for the project.
-
-## Setup and Configuration
-
-### Prerequisites
-
-- Docker and Docker Compose
-- AWS account with S3 and Redshift setup
-- Python 3.x
-
-### Docker Compose Configuration
-
-- **Kafka and Zookeeper**: Set up Kafka brokers and Zookeeper for managing the Kafka cluster.
-- **Spark**: Configure Spark master and worker nodes.
-- **Networking**: All services are connected via the datamasterylab network.
-
-## Dependencies
-
-Install the Python dependencies listed in requirements.txt:
+### 1. Try the generator with no infrastructure
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+python jobs/main.py --dry-run --max-ticks 5   # prints events to stdout
 ```
 
-## Configuration
+`--dry-run` needs no Kafka, no AWS, no API key (weather falls back to synthetic
+values). Good for inspecting the event payloads.
 
-Update `config.py` with your AWS credentials and any other configuration settings required for the project.
-
-## Running the Project
-
-### Start Docker Services
-
-Use Docker Compose to start all services:
+### 2. Run the full pipeline
 
 ```bash
-docker-compose up -d
+cp .env.example .env        # fill in AWS keys, S3 bucket, optional weather key
+docker compose up -d        # Kafka, Zookeeper, Spark master + workers
+
+# produce events to Kafka
+python jobs/main.py
+
+# submit the Spark streaming job
+spark-submit \
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.13:3.5.0,org.apache.hadoop:hadoop-aws:3.3.1,com.amazonaws:aws-java-sdk:1.11.469 \
+  jobs/spark-city.py
 ```
 
-### Run Spark Job
-
-Submit the Spark job to process data from Kafka and write to S3:
-
-```bash
-spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.13:3.5.0,org.apache.hadoop:hadoop-aws:3.3.1,com.amazonaws:aws-java-sdk:1.11.469 jobs/spark-city.py
-```
-
-### Query Data
-
-Use the provided `redshift-query.sql` script to create an external schema in Redshift and query the data.
+Then create the external schema and query the data:
 
 ```sql
--- Run this script in your Redshift query editor
 create external schema dev_smartcity
-from data catalog
-database smartcity
-iam_role 'arn:aws:iam::6112121121212:role/smart-city-redshift-s3-role'
+from data catalog database smartcity
+iam_role '<your-redshift-s3-role-arn>'
 region 'us-east-1';
 
 select * from dev_smartcity.gps_data;
 ```
 
-## Schema Definitions
+## Configuration
 
-The following schemas are defined for processing data:
+All settings come from environment variables (see `.env.example`) — **no secrets
+in source**. `jobs/config.py` reads them; `.env` is gitignored.
 
-- **Vehicle Schema**: Includes fields like `id`, `deviceId`, `timestamp`, `location`, `speed`, etc.
-- **GPS Schema**: Includes fields like `id`, `deviceId`, `timestamp`, `speed`, `direction`, `vehicleType`, etc.
-- **Traffic Schema**: Includes fields like `id`, `deviceId`, `cameraId`, `location`, `timestamp`, `snapshot`, etc.
-- **Weather Schema**: Includes fields like `id`, `deviceId`, `location`, `timestamp`, `temperature`, `weatherCondition`, etc.
-- **Emergency Schema**: Includes fields like `id`, `deviceId`, `incidentId`, `type`, `timestamp`, `location`, `status`, `description`, etc.
+| Variable | Purpose | Default |
+|---|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | Producer broker (from host) | `localhost:9092` |
+| `KAFKA_BOOTSTRAP_SERVERS_INTERNAL` | Broker as seen by Spark container | `broker:29092` |
+| `OPENWEATHERMAP_API_KEY` | Live weather (optional) | unset → synthetic |
+| `EMIT_INTERVAL_SECONDS` | Seconds between ticks | `3` |
+| `AWS_ACCESS_KEY` / `AWS_SECRET_KEY` | S3 write credentials | — |
+| `S3_BUCKET` | Bucket for data + checkpoints | `spark-streaming-data` |
 
-## Troubleshooting
+## Components
 
-- **Spark Job Errors**: Check Spark logs for detailed error messages.
-- **Kafka Connectivity**: Ensure that Kafka and Zookeeper are running and properly configured.
-- **S3 Access**: Verify that AWS credentials are correct and that the S3 bucket is accessible.
-- **Redshift Queries**: Ensure that the IAM role has the necessary permissions and that the external schema is created successfully.
+- **`jobs/main.py`** — telemetry generator / Kafka producer (`--dry-run` and `--max-ticks` for testing)
+- **`jobs/spark-city.py`** — Spark Structured Streaming consumer → Parquet on S3
+- **`jobs/config.py`** — environment-based configuration (no secrets)
+- **`docker-compose.yml`** — Kafka, Zookeeper, Spark master + 2 workers
+- **`redshift-query.sql`** — Redshift Spectrum external schema
 
----
+## Stack
 
-Feel free to customize further based on your specific needs.
+Python · Apache Kafka · Apache Spark (Structured Streaming) · AWS S3 · AWS Redshift Spectrum · Docker Compose
